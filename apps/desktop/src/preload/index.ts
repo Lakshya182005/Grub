@@ -14,6 +14,18 @@ export interface PttEventInfo {
   on: boolean
 }
 
+export interface PreflightEngineResult {
+  engine: string
+  detail: string
+  latency: string
+  status: 'pass' | 'fail'
+}
+
+export interface PreflightResponse {
+  all_passed: boolean
+  engines: PreflightEngineResult[]
+}
+
 export interface ScribeAPI {
   getMicStatus: () => Promise<string>
   openMicSettings: () => Promise<void>
@@ -21,11 +33,13 @@ export interface ScribeAPI {
   openNotesFolder: () => Promise<void>
   setState: (state: string) => Promise<void>
   captureScreenshot: (name: string) => Promise<string>
+  runPreflight: () => Promise<PreflightResponse>
   getSidecarInfo: () => Promise<{ port: number | null; token: string; status: string }>
   onSidecarReady: (callback: (info: SidecarReadyInfo) => void) => () => void
   onSidecarStatus: (callback: (info: SidecarStatusInfo) => void) => () => void
   onPttChange: (callback: (info: PttEventInfo) => void) => () => void
   onTriggerDemo: (callback: (file: string) => void) => () => void
+  onShowPreflight: (callback: () => void) => () => void
 }
 
 const scribeAPI: ScribeAPI = {
@@ -35,6 +49,7 @@ const scribeAPI: ScribeAPI = {
   openNotesFolder: (): Promise<void> => ipcRenderer.invoke('scribe:open-notes-folder'),
   setState: (state: string): Promise<void> => ipcRenderer.invoke('scribe:set-state', state),
   captureScreenshot: (name: string): Promise<string> => ipcRenderer.invoke('scribe:capture-screenshot', name),
+  runPreflight: (): Promise<PreflightResponse> => ipcRenderer.invoke('scribe:run-preflight'),
   getSidecarInfo: (): Promise<{ port: number | null; token: string; status: string }> =>
     ipcRenderer.invoke('scribe:get-sidecar-info'),
 
@@ -67,6 +82,14 @@ const scribeAPI: ScribeAPI = {
     ipcRenderer.on('scribe:trigger-demo', subscription)
     return (): void => {
       ipcRenderer.removeListener('scribe:trigger-demo', subscription)
+    }
+  },
+
+  onShowPreflight: (callback: () => void): (() => void) => {
+    const subscription = (): void => callback()
+    ipcRenderer.on('scribe:show-preflight', subscription)
+    return (): void => {
+      ipcRenderer.removeListener('scribe:show-preflight', subscription)
     }
   }
 }

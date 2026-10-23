@@ -196,6 +196,15 @@ function createTray(): void {
         shell.openPath(folder)
       }
     },
+    {
+      label: 'Run Preflight',
+      click: (): void => {
+        if (mainWindow) {
+          mainWindow.show()
+          mainWindow.webContents.send('scribe:show-preflight')
+        }
+      }
+    },
     { type: 'separator' },
     {
       label: 'Quit',
@@ -243,6 +252,15 @@ function createApplicationMenu(): void {
             const folder = getNotesFolder()
             mkdirSync(folder, { recursive: true })
             shell.openPath(folder)
+          }
+        },
+        {
+          label: 'Run Preflight Checks',
+          accelerator: 'CmdOrCtrl+P',
+          click: (): void => {
+            if (mainWindow) {
+              mainWindow.webContents.send('scribe:show-preflight')
+            }
           }
         },
         { type: 'separator' },
@@ -378,6 +396,52 @@ ipcMain.handle('scribe:get-sidecar-info', () => {
     return { port: sidecarPort, token: sidecarToken, status: 'running' }
   }
   return { port: null, token: sidecarToken, status: 'starting' }
+})
+
+async function executePreflight(): Promise<{
+  all_passed: boolean
+  engines: { engine: string; detail: string; latency: string; status: 'pass' | 'fail' }[]
+}> {
+  const repoRoot = getRepoRoot()
+  return new Promise((resolve) => {
+    const child = spawn(
+      'uv',
+      ['run', '--project', 'sidecar', 'python', 'scripts/preflight.py', '--json'],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PYTHONPATH: join(repoRoot, 'sidecar')
+        }
+      }
+    )
+
+    let stdout = ''
+    child.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString('utf-8')
+    })
+
+    child.on('close', () => {
+      const lines = stdout.trim().split('\n')
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim()
+        if (line.startsWith('{') && line.endsWith('}')) {
+          try {
+            const parsed = JSON.parse(line)
+            resolve(parsed)
+            return
+          } catch {
+            // continue
+          }
+        }
+      }
+      resolve({ all_passed: false, engines: [] })
+    })
+  })
+}
+
+ipcMain.handle('scribe:run-preflight', async () => {
+  return await executePreflight()
 })
 
 async function runScreenshotSuite(): Promise<void> {

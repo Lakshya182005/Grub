@@ -284,6 +284,7 @@ def main() -> None:
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434/api/chat", help="Ollama chat API URL")
     parser.add_argument("--hello-wav", default=os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "hello.wav"), help="Audio fixture for STT")
     parser.add_argument("--wake-wav", default=os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "wake.wav"), help="Audio fixture for Wake Word")
+    parser.add_argument("--json", action="store_true", help="Output JSON results for in-app check")
     args = parser.parse_args()
 
     # 1. Binary checks
@@ -339,13 +340,26 @@ def main() -> None:
     results.append(("Wake (openWakeWord)", wake_detail, f"{wake_s*1000:.1f} ms", "PASS" if wake_ok else "FAIL"))
 
     # Summary table
-    print("\n" + "=" * 80)
-    print(f"{'ENGINE':<22} {'METRIC / DETAIL':<38} {'LATENCY':<12} {'RESULT'}")
-    print("-" * 80)
     all_passed = True
+    json_results = []
     for engine, detail, latency, res in results:
         if res != "PASS":
             all_passed = False
+        json_results.append({
+            "engine": engine,
+            "detail": detail,
+            "latency": latency,
+            "status": "pass" if res == "PASS" else "fail"
+        })
+
+    if args.json:
+        print(json.dumps({"all_passed": all_passed, "engines": json_results}))
+        sys.exit(0 if all_passed else 1)
+
+    print("\n" + "=" * 80)
+    print(f"{'ENGINE':<22} {'METRIC / DETAIL':<38} {'LATENCY':<12} {'RESULT'}")
+    print("-" * 80)
+    for engine, detail, latency, res in results:
         print(f"{engine:<22} {detail:<38} {latency:<12} {res}")
     print("=" * 80)
 

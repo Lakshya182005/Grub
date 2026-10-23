@@ -15,11 +15,16 @@ declare global {
       openNotesFolder: () => Promise<void>
       setState: (state: string) => Promise<void>
       captureScreenshot: (name: string) => Promise<string>
+      runPreflight: () => Promise<{
+        all_passed: boolean
+        engines: { engine: string; detail: string; latency: string; status: 'pass' | 'fail' }[]
+      }>
       getSidecarInfo: () => Promise<{ port: number | null; token: string; status: string }>
       onSidecarReady: (callback: (info: { port: number; token: string }) => void) => () => void
       onSidecarStatus: (callback: (info: { status: string; code?: number | string }) => void) => () => void
       onPttChange: (callback: (info: { on: boolean }) => void) => () => void
       onTriggerDemo: (callback: (file: string) => void) => () => void
+      onShowPreflight: (callback: () => void) => () => void
     }
     // Test hooks for acceptance screenshot automation
     setTestState?: (state: OrbState) => void
@@ -44,6 +49,14 @@ export const App: React.FC = () => {
 
   // Note cards list
   const [notes, setNotes] = useState<NoteItem[]>([])
+
+  // Preflight check modal state
+  const [preflightOpen, setPreflightOpen] = useState<boolean>(false)
+  const [preflightLoading, setPreflightLoading] = useState<boolean>(false)
+  const [preflightData, setPreflightData] = useState<{
+    all_passed: boolean
+    engines: { engine: string; detail: string; latency: string; status: 'pass' | 'fail' }[]
+  } | null>(null)
 
   const wsClientRef = useRef<WebSocketClient | null>(null)
   const audioPipelineRef = useRef<AudioPipeline | null>(null)
@@ -152,6 +165,22 @@ export const App: React.FC = () => {
     }
   }, [])
 
+  // Trigger preflight checks
+  const triggerPreflight = useCallback(async (): Promise<void> => {
+    setPreflightOpen(true)
+    setPreflightLoading(true)
+    try {
+      if (window.scribe?.runPreflight) {
+        const res = await window.scribe.runPreflight()
+        setPreflightData(res)
+      }
+    } catch (err) {
+      console.error('[App] Preflight failed:', err)
+    } finally {
+      setPreflightLoading(false)
+    }
+  }, [])
+
   // Fade out bottom hint bar after 10 s
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -186,15 +215,22 @@ export const App: React.FC = () => {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
+        if (preflightOpen) {
+          setPreflightOpen(false)
+          return
+        }
         handleCancel()
       } else if (e.key === 'd' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault()
         handleTriggerDemo('hello.wav')
+      } else if (e.key === 'p' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        triggerPreflight()
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return (): void => window.removeEventListener('keydown', onKeyDown)
-  }, [handleCancel, handleTriggerDemo])
+  }, [handleCancel, handleTriggerDemo, triggerPreflight, preflightOpen])
 
   // Initialize pipeline & IPC
   useEffect(() => {
@@ -290,11 +326,16 @@ export const App: React.FC = () => {
         handleTriggerDemo(file)
       })
 
+      const cleanupPreflight = window.scribe.onShowPreflight(() => {
+        triggerPreflight()
+      })
+
       return (): void => {
         cleanupReady()
         cleanupStatus()
         cleanupPtt()
         cleanupDemo()
+        cleanupPreflight()
         audio.stop()
         ws.destroy()
       }
@@ -494,6 +535,83 @@ export const App: React.FC = () => {
         <div className="absolute bottom-3 right-4 text-[10px] font-mono text-[#8A93A6]/30 select-none pointer-events-none hover:text-[#8A93A6] transition-colors">
           {fps} fps
         </div>
+
+        {/* Preflight Checks In-App Modal */}
+        {preflightOpen && (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-md p-6 rounded-xl bg-[#121620] border border-[#1C2230] shadow-2xl animate-card-spring text-left">
+              <div className="flex items-center justify-between pb-3 border-b border-[#1C2230] mb-4">
+                <h3 className="text-[15px] font-semibold text-[#E6E9F2]">
+                  Engine Preflight Checks
+                </h3>
+                {preflightData && (
+                  <span
+                    className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                      preflightData.all_passed
+                        ? 'bg-emerald-950/80 border border-emerald-500/50 text-emerald-300'
+                        : 'bg-rose-950/80 border border-rose-500/50 text-rose-300'
+                    }`}
+                  >
+                    {preflightData.all_passed ? 'ALL PASSED' : 'CHECK FAILED'}
+                  </span>
+                )}
+              </div>
+
+              {preflightLoading ? (
+                <div className="flex flex-col items-center justify-center py-8 space-y-3">
+                  <div className="w-6 h-6 rounded-full border-2 border-[#7C8CF8] border-t-transparent animate-spin" />
+                  <p className="text-[13px] text-[#8A93A6]">
+                    Testing whisper, ollama, piper, openwakeword...
+                  </p>
+                </div>
+              ) : preflightData?.engines ? (
+                <div className="space-y-3">
+                  {preflightData.engines.map((eng, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-lg bg-[#0B0E14] border border-[#1C2230] flex items-center justify-between"
+                    >
+                      <div className="flex items-center space-x-2.5 min-w-0">
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            eng.status === 'pass' ? 'bg-[#34D399]' : 'bg-rose-400'
+                          }`}
+                        />
+                        <div className="min-w-0">
+                          <p className="text-[13px] font-medium text-[#E6E9F2] truncate">
+                            {eng.engine}
+                          </p>
+                          <p className="text-[11px] text-[#8A93A6] truncate">{eng.detail}</p>
+                        </div>
+                      </div>
+                      <span className="text-[12px] font-mono text-[#7C8CF8] shrink-0 ml-3">
+                        {eng.latency}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[13px] text-[#8A93A6] py-4">No results available.</p>
+              )}
+
+              <div className="mt-5 pt-3 border-t border-[#1C2230] flex items-center justify-end space-x-2.5">
+                <button
+                  onClick={() => triggerPreflight()}
+                  disabled={preflightLoading}
+                  className="px-3 py-1.5 rounded-lg border border-[#1C2230] hover:bg-[#181E2C] text-[13px] text-[#8A93A6] hover:text-[#E6E9F2] transition-colors disabled:opacity-50"
+                >
+                  Re-test
+                </button>
+                <button
+                  onClick={() => setPreflightOpen(false)}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#7C8CF8] hover:bg-[#6878ea] text-[#0B0E14] font-semibold text-[13px] transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   )
