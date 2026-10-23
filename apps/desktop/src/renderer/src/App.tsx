@@ -165,6 +165,20 @@ export const App: React.FC = () => {
     }
   }, [])
 
+  // Handle manual Click-to-Talk / Finish Note toggle
+  const handleToggleListening = useCallback((): void => {
+    if (orbState === 'idle') {
+      setOrbState('listening')
+      wsClientRef.current?.sendJson({ t: 'ptt', on: true })
+      setTranscriptText('')
+      setShowQuietHint(false)
+      playWakeChime()
+    } else if (orbState === 'listening') {
+      setOrbState('thinking')
+      wsClientRef.current?.sendJson({ t: 'ptt', on: false })
+    }
+  }, [orbState, playWakeChime])
+
   // Trigger preflight checks
   const triggerPreflight = useCallback(async (): Promise<void> => {
     setPreflightOpen(true)
@@ -389,14 +403,37 @@ export const App: React.FC = () => {
   const chipConfig = useMemo(() => {
     switch (orbState) {
       case 'listening':
-        return { text: 'Listening', dotClass: 'bg-[#7C8CF8]' }
+        return {
+          title: 'Listening · Recording Note',
+          subtitle: 'Speak your note now · will save when you pause',
+          dotClass: 'bg-rose-500 animate-pulse',
+          containerClass:
+            'bg-rose-950/30 border-rose-500/60 shadow-[0_0_24px_rgba(244,63,94,0.3)] text-[#E6E9F2]'
+        }
       case 'thinking':
-        return { text: 'Thinking', dotClass: 'bg-[#7C8CF8] animate-pulse' }
+        return {
+          title: 'Thinking',
+          subtitle: 'Formatting note with Ollama...',
+          dotClass: 'bg-[#7C8CF8] animate-pulse',
+          containerClass:
+            'bg-[#121620] border-[#7C8CF8]/50 shadow-[0_0_16px_rgba(124,140,248,0.2)] text-[#E6E9F2]'
+        }
       case 'speaking':
-        return { text: 'Speaking', dotClass: 'bg-[#34D399]' }
+        return {
+          title: 'Speaking',
+          subtitle: 'Note created · saying "Noted."',
+          dotClass: 'bg-[#34D399]',
+          containerClass:
+            'bg-emerald-950/30 border-emerald-500/40 shadow-[0_0_16px_rgba(52,211,153,0.2)] text-emerald-200'
+        }
       case 'idle':
       default:
-        return { text: 'Listening for Hey Jarvis', dotClass: 'bg-[#8A93A6]' }
+        return {
+          title: 'Listening for Hey Jarvis',
+          subtitle: 'Say "Hey Jarvis" or click Talk below',
+          dotClass: 'bg-[#8A93A6]',
+          containerClass: 'bg-[#121620] border-[#1C2230] text-[#E6E9F2]'
+        }
     }
   }, [orbState])
 
@@ -451,8 +488,86 @@ export const App: React.FC = () => {
 
       {/* Right Stage */}
       <main className="flex-1 h-full flex flex-col relative items-center justify-center p-8 bg-[#0B0E14]">
-        {/* Top Header Controls */}
-        <div className="absolute top-4 right-6 flex items-center space-x-3">
+        {/* Top Glowing Edge Bar when Recording */}
+        {orbState === 'listening' && (
+          <div className="absolute top-0 inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-rose-500/80 to-transparent animate-pulse pointer-events-none" />
+        )}
+
+        {/* Top Header Controls: Live Mic & Engine Status */}
+        <div className="absolute top-4 right-6 flex items-center space-x-3 z-10">
+          {/* Live Mic Activity & Listening Indicator */}
+          <div
+            className={`inline-flex items-center px-3 py-1.5 rounded-full text-[12px] font-medium border transition-all duration-200 ${
+              orbState === 'listening'
+                ? 'bg-rose-950/70 border-rose-500/60 text-rose-200 shadow-[0_0_14px_rgba(244,63,94,0.35)]'
+                : micStatus === 'granted'
+                  ? 'bg-[#121620] border-[#1C2230] text-[#E6E9F2]'
+                  : 'bg-amber-950/70 border-amber-500/50 text-amber-200'
+            }`}
+          >
+            <span className="relative flex h-2 w-2 mr-2">
+              {orbState === 'listening' ? (
+                <>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+                </>
+              ) : micStatus === 'granted' ? (
+                <>
+                  <span
+                    className={`absolute inline-flex h-full w-full rounded-full transition-opacity ${
+                      rms > 0.03 ? 'animate-ping bg-emerald-400 opacity-75' : 'opacity-0'
+                    }`}
+                  />
+                  <span
+                    className={`relative inline-flex rounded-full h-2 w-2 transition-colors duration-200 ${
+                      rms > 0.03 ? 'bg-[#34D399]' : 'bg-[#8A93A6]'
+                    }`}
+                  />
+                </>
+              ) : (
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400" />
+              )}
+            </span>
+
+            <span className="tracking-[0.06em] text-[11px] font-semibold uppercase">
+              {orbState === 'listening'
+                ? 'Recording Note'
+                : micStatus === 'granted'
+                  ? 'Mic Active'
+                  : 'Mic Initializing'}
+            </span>
+
+            {/* Real-time 3-bar audio VU meter */}
+            {micStatus === 'granted' && (
+              <div className="flex items-end space-x-[2px] h-3 ml-2.5 pb-[1px]">
+                <div
+                  className={`w-[2px] rounded-full transition-all duration-75 ${
+                    orbState === 'listening' ? 'bg-rose-400' : 'bg-[#7C8CF8]'
+                  }`}
+                  style={{
+                    height: `${Math.max(3, Math.min(12, 3 + rms * 60))}px`
+                  }}
+                />
+                <div
+                  className={`w-[2px] rounded-full transition-all duration-75 ${
+                    orbState === 'listening' ? 'bg-rose-400' : 'bg-[#7C8CF8]'
+                  }`}
+                  style={{
+                    height: `${Math.max(3, Math.min(12, 3 + rms * 90))}px`
+                  }}
+                />
+                <div
+                  className={`w-[2px] rounded-full transition-all duration-75 ${
+                    orbState === 'listening' ? 'bg-rose-400' : 'bg-[#7C8CF8]'
+                  }`}
+                  style={{
+                    height: `${Math.max(3, Math.min(12, 3 + rms * 45))}px`
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
           {sidecarStatus === 'crashed' && (
             <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-red-950/80 border border-red-500/50 text-red-300">
               <span className="w-1.5 h-1.5 mr-1.5 rounded-full bg-red-400 animate-ping" />
@@ -486,21 +601,34 @@ export const App: React.FC = () => {
             </button>
           </div>
         ) : (
-          /* Live Stage: Orb + Chip + Word-by-Word Transcript */
+          /* Live Stage: Orb + Chip + Word-by-Word Transcript + Controls */
           <div className="flex flex-col items-center justify-center max-w-xl text-center w-full">
             {/* 220 px Orb */}
             <Orb state={orbState} rms={rms} />
 
             {/* State Chip: Pill, 1px border, 13px label with 0.08em letter-spacing */}
-            <div className="inline-flex items-center px-3.5 py-1.5 rounded-full bg-[#121620] border border-[#1C2230] mt-7 transition-all duration-200">
-              <span className={`w-2 h-2 mr-2.5 rounded-full transition-colors duration-200 ${chipConfig.dotClass}`} />
-              <span className="text-[13px] tracking-[0.08em] font-medium text-[#E6E9F2]">
-                {chipConfig.text}
+            <div
+              className={`inline-flex items-center px-4 py-1.5 rounded-full mt-7 transition-all duration-200 border ${chipConfig.containerClass}`}
+            >
+              <span
+                className={`w-2 h-2 mr-2.5 rounded-full transition-colors duration-200 ${chipConfig.dotClass}`}
+              />
+              <span className="text-[13px] tracking-[0.08em] font-medium">
+                {chipConfig.title}
               </span>
             </div>
 
+            {/* Subtitle helper giving unambiguous instruction */}
+            <p
+              className={`text-[12px] mt-2 tracking-wide transition-all duration-200 ${
+                orbState === 'listening' ? 'text-rose-300/90 font-medium' : 'text-[#8A93A6]'
+              }`}
+            >
+              {chipConfig.subtitle}
+            </p>
+
             {/* Transcript: Center stage, max 2 lines, 22px / 1.5, fades in per word (40 ms stagger) */}
-            <div className="min-h-[66px] max-h-[66px] flex items-center justify-center mt-5 px-6 max-w-[560px] text-center overflow-hidden">
+            <div className="min-h-[66px] max-h-[66px] flex items-center justify-center mt-3 px-6 max-w-[560px] text-center overflow-hidden">
               {words.length > 0 ? (
                 <p className="text-[22px] leading-[1.5] text-[#E6E9F2] font-normal line-clamp-2">
                   {words.map((word, idx) => (
@@ -519,6 +647,67 @@ export const App: React.FC = () => {
                 </p>
               ) : null}
             </div>
+
+            {/* Interactive Control: Click to Talk / Finish Note */}
+            {orbState === 'idle' && (
+              <div className="mt-4 flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={handleToggleListening}
+                  className="inline-flex items-center space-x-2 px-4 py-2 rounded-full bg-[#121620] hover:bg-[#181E2C] border border-[#1C2230] hover:border-[#7C8CF8]/40 text-[#8A93A6] hover:text-[#E6E9F2] text-[13px] font-medium transition-all duration-150 shadow-sm active:scale-95 group cursor-pointer"
+                  title="Click to start recording note (or hold Option+Space)"
+                >
+                  <svg
+                    className="w-3.5 h-3.5 text-[#7C8CF8] group-hover:scale-110 transition-transform"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                    />
+                  </svg>
+                  <span>Click to Talk</span>
+                  <span className="text-[11px] font-mono text-[#8A93A6]/50 group-hover:text-[#8A93A6]">
+                    ⌥Space
+                  </span>
+                </button>
+              </div>
+            )}
+
+            {orbState === 'listening' && (
+              <div className="mt-4 flex items-center justify-center space-x-3">
+                <button
+                  type="button"
+                  onClick={handleToggleListening}
+                  className="inline-flex items-center space-x-2 px-5 py-2 rounded-full bg-[#7C8CF8] hover:bg-[#6878ea] text-[#0B0E14] text-[13px] font-semibold transition-all duration-150 shadow-[0_0_16px_rgba(124,140,248,0.45)] active:scale-95 cursor-pointer"
+                  title="Click to finish and save note"
+                >
+                  <span className="w-2.5 h-2.5 rounded-sm bg-[#0B0E14]" />
+                  <span>Finish Note &amp; Save</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  className="inline-flex items-center px-3.5 py-2 rounded-full border border-[#1C2230] hover:bg-[#181E2C] text-[#8A93A6] hover:text-[#E6E9F2] text-[12px] font-medium transition-colors cursor-pointer"
+                  title="Cancel note recording"
+                >
+                  Cancel <span className="font-mono text-[10px] ml-1.5 text-[#8A93A6]/60">Esc</span>
+                </button>
+              </div>
+            )}
+
+            {orbState === 'thinking' && (
+              <div className="mt-4 flex items-center justify-center">
+                <div className="inline-flex items-center space-x-2.5 px-4 py-2 rounded-full bg-[#121620]/60 border border-[#1C2230] text-[#8A93A6] text-[12px]">
+                  <div className="w-3.5 h-3.5 rounded-full border-2 border-[#7C8CF8] border-t-transparent animate-spin" />
+                  <span>Creating note...</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

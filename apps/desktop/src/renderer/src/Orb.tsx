@@ -89,11 +89,19 @@ export const Orb: React.FC<OrbProps> = ({ state, rms }) => {
           state === 'idle'
             ? 'border-[#7C8CF8]/40'
             : state === 'listening'
-              ? 'border-[#7C8CF8]/70'
+              ? 'border-[#7C8CF8]/70 shadow-[0_0_18px_rgba(124,140,248,0.3)]'
               : state === 'thinking'
                 ? 'border-[#7C8CF8]/65'
                 : 'border-[#34D399]/75'
         }`}
+        style={
+          state === 'idle' && smoothedRms > 0.012
+            ? {
+                borderColor: `rgba(124, 140, 248, ${Math.min(0.85, 0.4 + smoothedRms * 4.0)})`,
+                boxShadow: `0 0 ${Math.min(18, 4 + smoothedRms * 70)}px rgba(124, 140, 248, 0.35)`
+              }
+            : undefined
+        }
       />
 
       {/* Radial Gradient Core (~76 px) */}
@@ -102,7 +110,7 @@ export const Orb: React.FC<OrbProps> = ({ state, rms }) => {
           state === 'idle'
             ? 'bg-[radial-gradient(circle,_#7C8CF8_0%,_#4F46E5_40%,_#1E1B4B_75%,_transparent_100%)] opacity-85 animate-orb-idle-core'
             : state === 'listening'
-              ? 'bg-[radial-gradient(circle,_#7C8CF8_0%,_#6366F1_45%,_#1E1B4B_80%,_transparent_100%)] opacity-95'
+              ? 'bg-[radial-gradient(circle,_#7C8CF8_0%,_#6366F1_45%,_#1E1B4B_80%,_transparent_100%)] opacity-95 shadow-[0_0_24px_rgba(124,140,248,0.5)]'
               : state === 'thinking'
                 ? 'bg-[radial-gradient(circle,_#A5B4FC_0%,_#7C8CF8_45%,_#312E81_85%,_transparent_100%)] animate-orb-thinking-core'
                 : 'bg-[radial-gradient(circle,_#34D399_0%,_#059669_50%,_#064E3B_85%,_transparent_100%)] opacity-95'
@@ -117,7 +125,10 @@ export const Orb: React.FC<OrbProps> = ({ state, rms }) => {
             const distFromCenter = Math.abs(i - 11.5) / 11.5
             // Parabolic curve: highest in center, tapering toward edges
             const curve = Math.cos(distFromCenter * (Math.PI / 2.2))
-            const rawHeight = Math.max(4, Math.min(48, smoothedRms * 56 * curve + 3))
+            // Non-linear gain for human speech dynamics (0.01 to 0.15 RMS)
+            const voiceIntensity = Math.min(1.0, Math.max(0, (smoothedRms - 0.003) * 7.5))
+            const nonLinearGain = Math.pow(voiceIntensity, 0.72)
+            const rawHeight = Math.max(5, Math.min(52, 5 + nonLinearGain * 45 * curve))
 
             return (
               <div
