@@ -1,0 +1,21 @@
+Hey Scribe MVP — demo build
+
+Order of operations (you, not an agent):
+  1. Terminal:  brew install node@22 pnpm uv whisper-cpp ffmpeg
+                brew install --cask ollama
+                uv tool install piper-tts
+  2. Download models  ->  docs/02-DEMO-CHECKLIST.md section A1
+  3. Start servers in two terminal panes: whisper-server (port 8787), ollama serve
+  4. Open this folder in Antigravity. Check the agent can read AGENTS.md.
+  5. One agent session only: /plan  +  Prompt 0 from docs/01-MVP-PROMPTS.md
+
+Docs:
+  00-MVP-PLAN.md              scope, storyboard, pipeline spec, 8GB model picks
+  01-MVP-PROMPTS.md           Prompts 0-4  (the only prompts you should send)
+  02-DEMO-CHECKLIST.md        install commands, smoke tests, stage script
+  04-UI-MOCK.svg              the target look
+  05-START-HERE.md            the long version of this file
+  06-ANTIGRAVITY-IDE-SETUP.md IDE settings and permission traps
+
+Stay in ONE conversation in the agent panel. Ignore Agent Manager / parallel agents today.
+After Prompt 2 the pipeline is frozen. Polish only touches the renderer.
