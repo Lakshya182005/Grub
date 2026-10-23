@@ -7,5 +7,11 @@
     "build": "pnpm --filter desktop build",
     "typecheck": "pnpm --filter desktop typecheck",
     "lint": "pnpm --filter desktop lint"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }
