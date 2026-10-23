@@ -1,6 +1,7 @@
 /**
  * pcm-worklet.js — AudioWorkletProcessor for microphone downsampling.
  * Decimates input (e.g. 48 kHz -> 16 kHz by averaging 3 samples) and batches into 320 Int16 samples.
+ * Emits binary frames: 0x01 | uint32 seq (big-endian) | 640 bytes PCM (645 bytes total).
  */
 class PcmWorkletProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -9,6 +10,7 @@ class PcmWorkletProcessor extends AudioWorkletProcessor {
     this.bufferIndex = 0
     this.accum = 0
     this.accumCount = 0
+    this.seq = 0
   }
 
   process(inputs) {
@@ -34,8 +36,20 @@ class PcmWorkletProcessor extends AudioWorkletProcessor {
         this.buffer[this.bufferIndex++] = Math.round(pcm16)
 
         if (this.bufferIndex >= 320) {
-          // Transfer buffer to main thread
-          this.port.postMessage(this.buffer.buffer, [this.buffer.buffer])
+          // Construct packet: 0x01 | uint32 seq (4 bytes) | 640 bytes PCM
+          const packetBuffer = new ArrayBuffer(1 + 4 + 640)
+          const dataView = new DataView(packetBuffer)
+          dataView.setUint8(0, 0x01)
+          dataView.setUint32(1, this.seq >>> 0, false) // Big-endian uint32
+          this.seq = (this.seq + 1) >>> 0
+
+          // Copy raw Int16 PCM bytes
+          const packetBytes = new Uint8Array(packetBuffer, 5, 640)
+          packetBytes.set(new Uint8Array(this.buffer.buffer))
+
+          // Transfer buffer
+          this.port.postMessage(packetBuffer, [packetBuffer])
+
           this.buffer = new Int16Array(320)
           this.bufferIndex = 0
         }

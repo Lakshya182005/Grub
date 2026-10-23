@@ -17,6 +17,7 @@ export interface PttEventInfo {
 export interface ScribeAPI {
   getMicStatus: () => Promise<string>
   openMicSettings: () => Promise<void>
+  revealFile: (path: string) => Promise<void>
   getSidecarInfo: () => Promise<{ port: number | null; token: string; status: string }>
   onSidecarReady: (callback: (info: SidecarReadyInfo) => void) => () => void
   onSidecarStatus: (callback: (info: SidecarStatusInfo) => void) => () => void
@@ -26,6 +27,7 @@ export interface ScribeAPI {
 const scribeAPI: ScribeAPI = {
   getMicStatus: (): Promise<string> => ipcRenderer.invoke('scribe:get-mic-status'),
   openMicSettings: (): Promise<void> => ipcRenderer.invoke('scribe:open-mic-settings'),
+  revealFile: (path: string): Promise<void> => ipcRenderer.invoke('scribe:reveal-file', path),
   getSidecarInfo: (): Promise<{ port: number | null; token: string; status: string }> =>
     ipcRenderer.invoke('scribe:get-sidecar-info'),
 

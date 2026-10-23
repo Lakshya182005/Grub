@@ -3,11 +3,12 @@
  */
 
 export type SidecarMessage =
+  | { t: 'wake' }
   | { t: 'ready'; model: string; voice: string }
   | { t: 'state'; state: 'idle' | 'listening' | 'thinking' | 'speaking' }
-  | { t: 'transcript'; text: string }
+  | { t: 'transcript'; text: string; ms?: number }
   | { t: 'note'; id: string; title: string; body: string; path: string }
-  | { t: 'say'; text: string }
+  | { t: 'say'; text: string; pcm_b64?: string | null; rate?: number }
   | { t: 'error'; kind: string; msg: string }
   | Record<string, unknown>
 

@@ -189,6 +189,12 @@ ipcMain.handle('scribe:open-mic-settings', () => {
   shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')
 })
 
+ipcMain.handle('scribe:reveal-file', (_event, filePath: string) => {
+  if (filePath) {
+    shell.showItemInFolder(filePath)
+  }
+})
+
 ipcMain.handle('scribe:get-sidecar-info', () => {
   if (sidecarPort) {
     return { port: sidecarPort, token: sidecarToken, status: 'running' }

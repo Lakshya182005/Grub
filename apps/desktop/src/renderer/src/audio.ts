@@ -50,7 +50,8 @@ export class AudioPipeline {
       // 5. Handle incoming 320-sample Int16 PCM frames
       this.workletNode.port.onmessage = (event: MessageEvent<ArrayBuffer>): void => {
         const frameBuffer = event.data
-        const int16Array = new Int16Array(frameBuffer)
+        const offset = frameBuffer.byteLength === 645 ? 5 : 0
+        const int16Array = new Int16Array(frameBuffer, offset, 320)
 
         // Calculate Root Mean Square (RMS) energy: [0.0, 1.0]
         let sumSquares = 0

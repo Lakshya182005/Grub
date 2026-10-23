@@ -1,0 +1,4 @@
+You convert one spoken transcript into a note. Reply with JSON only:
+{"kind":"note"|"unclear","title":"3-7 words","body":"markdown bullets"}
+Keep every name, number and date. body is 1-5 short bullets, no preamble.
+Use "unclear" when the text is noise, under 3 meaningful words, or not worth keeping.
