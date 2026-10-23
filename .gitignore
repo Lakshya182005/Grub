@@ -5,3 +5,5 @@ dist/
 out/
 *.log
 *.tsbuildinfo
+.audit/
+.DS_Store

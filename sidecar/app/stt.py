@@ -25,7 +25,7 @@ class Stt:
         data = {
             "language": "en",
             "temperature": "0",
-            "response_format": "json",
+            "response_format": "verbose_json",
         }
 
         t0 = time.perf_counter()

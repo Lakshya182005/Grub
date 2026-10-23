@@ -275,6 +275,11 @@ export const App: React.FC = () => {
         } else if (msgType === 'say') {
           if (msg.pcm_b64 && typeof msg.pcm_b64 === 'string') {
             playPcm(msg.pcm_b64, Number(msg.rate) || 22050)
+          } else {
+            // no audio available — don't strand the state machine
+            setOrbState('idle')
+            window.scribe?.setState('idle')
+            wsClientRef.current?.sendJson({ t: 'playback_done' })
           }
         }
       },

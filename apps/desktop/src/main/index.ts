@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain, systemPreferences, shell, globalShortcut, Tray, Menu, nativeImage } from 'electron'
 import { join, resolve } from 'path'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, createWriteStream } from 'fs'
 import { homedir } from 'os'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, execFileSync, ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 
 let mainWindow: BrowserWindow | null = null
@@ -13,6 +13,22 @@ let sidecarRestartCount = 0
 let isQuitting = false
 let tray: Tray | null = null
 let isPttActive = false
+
+function resolveUv(): string {
+  try {
+    return execFileSync('/bin/zsh', ['-lc', 'command -v uv'], { encoding: 'utf8' }).trim()
+  } catch {
+    for (const p of [
+      '/opt/homebrew/bin/uv',
+      '/usr/local/bin/uv',
+      `${homedir()}/.cargo/bin/uv`,
+      `${homedir()}/.local/bin/uv`
+    ]) {
+      if (existsSync(p)) return p
+    }
+    throw new Error('uv not found — install with: brew install uv')
+  }
+}
 
 function getRepoRoot(): string {
   if (app.isPackaged) {
@@ -50,10 +66,29 @@ function spawnSidecar(): void {
   const repoRoot = getRepoRoot()
   sidecarToken = randomUUID()
 
-  console.log(`[main] Spawning sidecar in ${repoRoot} with token...`)
+  let uvBin = 'uv'
+  try {
+    uvBin = resolveUv()
+  } catch (err) {
+    console.error('[main] Failed to resolve uv:', err)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('scribe:sidecar-status', {
+        status: 'crashed',
+        code: 'uv_not_found'
+      })
+    }
+    return
+  }
+
+  const logsDir = app.getPath('logs')
+  mkdirSync(logsDir, { recursive: true })
+  const logPath = join(logsDir, 'sidecar.log')
+  const logStream = createWriteStream(logPath, { flags: 'a' })
+
+  console.log(`[main] Spawning sidecar with ${uvBin} in ${repoRoot} (log: ${logPath})...`)
 
   const child = spawn(
-    'uv',
+    uvBin,
     ['run', '--project', 'sidecar', 'python', '-m', 'app.main', '--port', '0', '--token', sidecarToken],
     {
       cwd: repoRoot,
@@ -62,11 +97,14 @@ function spawnSidecar(): void {
         PYTHONPATH: join(repoRoot, 'sidecar'),
         SIDECAR_TOKEN: sidecarToken
       },
-      stdio: ['ignore', 'pipe', 'inherit']
+      stdio: ['ignore', 'pipe', 'pipe']
     }
   )
 
   sidecarProcess = child
+
+  child.stdout?.pipe(logStream)
+  child.stderr?.pipe(logStream)
 
   let stdoutBuffer = ''
   child.stdout?.on('data', (chunk: Buffer) => {

@@ -68,7 +68,7 @@ class Brain:
             "body": body,
         }
 
-    def _call_ollama(self, text: str) -> Optional[dict]:
+    def _call_ollama(self, text: str, timeout_s: Optional[float] = None) -> Optional[dict]:
         payload = {
             "model": self.model,
             "stream": False,
@@ -85,8 +85,9 @@ class Brain:
             ],
         }
 
+        call_timeout = timeout_s if timeout_s is not None else self.timeout_s
         try:
-            with httpx.Client(timeout=self.timeout_s) as client:
+            with httpx.Client(timeout=call_timeout) as client:
                 resp = client.post(self.url, json=payload)
                 resp.raise_for_status()
                 res_json = resp.json()
@@ -98,17 +99,21 @@ class Brain:
             logger.warning("Ollama call failed: %s", e)
             return None
 
-    def format(self, text: str) -> Optional[dict]:
+    def format(self, text: str, deadline_s: float = 20.0) -> Optional[dict]:
         """Convert transcript to note schema: {"kind": "note"|"unclear", "title": str, "body": str} or None."""
         clean_text = text.strip()
         if not clean_text:
             return {"kind": "unclear", "title": "", "body": ""}
 
-        # First attempt
-        result = self._call_ollama(clean_text)
-        if result is not None:
-            return result
-
-        # Retry once
-        logger.info("Retrying Ollama formatting once...")
-        return self._call_ollama(clean_text)
+        import time
+        end = time.monotonic() + deadline_s
+        for attempt in (1, 2):
+            remaining = max(2.0, end - time.monotonic())
+            if attempt > 1:
+                logger.info("Retrying Ollama formatting once (remaining: %.1fs)...", remaining)
+            res = self._call_ollama(clean_text, timeout_s=min(self.timeout_s, remaining))
+            if res is not None:
+                return res
+            if time.monotonic() >= end:
+                break
+        return None

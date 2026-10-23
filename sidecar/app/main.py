@@ -17,12 +17,22 @@ import wave
 import numpy as np
 import websockets
 
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from app.wake import Wake
 from app.endpointer import Endpointer
 from app.stt import Stt
 from app.brain import Brain
 from app.vault import Vault
 from app.speak import Speak
+
+try:
+    from tools.lifecycle import Audit
+    audit = Audit("sidecar", root=ROOT_DIR)
+except Exception:
+    audit = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,29 +42,59 @@ logging.basicConfig(
 logger = logging.getLogger("sidecar")
 
 EXPECTED_TOKEN = os.environ.get("SIDECAR_TOKEN", "")
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 class PipelineOrchestrator:
     """Manages audio buffer, ML stages, and client state machine."""
 
-    def __init__(self, websocket, whisper_url: str, ollama_url: str, ollama_model: str, piper_model: str, vault_root: str):
+    def __init__(
+        self,
+        websocket,
+        engines: dict | None = None,
+        whisper_url: str = "http://127.0.0.1:8787/inference",
+        ollama_url: str = "http://127.0.0.1:11434/api/chat",
+        ollama_model: str = "qwen2.5:3b-instruct",
+        piper_model: str = os.path.expanduser("~/piper/en_US-lessac-medium.onnx"),
+        vault_root: str = os.path.expanduser("~/Documents/Hey Scribe"),
+    ):
         self.ws = websocket
         self.state = "idle"  # idle | listening | thinking | speaking
         self.ring_buffer = collections.deque(maxlen=1000)  # 20 s of 20 ms frames (1000 frames)
         self.utterance_frames = []
 
-        # Instantiate ML stages
-        self.wake = Wake()
-        self.endpointer = Endpointer()
-        self.stt = Stt(base_url=whisper_url)
-        self.brain = Brain(ollama_url=ollama_url, model=ollama_model)
-        self.vault = Vault(root=vault_root)
-        self.speak = Speak(piper_model=piper_model)
+        if engines is None:
+            engines = {
+                "wake": Wake(),
+                "endpointer": Endpointer(),
+                "stt": Stt(base_url=whisper_url),
+                "brain": Brain(ollama_url=ollama_url, model=ollama_model),
+                "vault": Vault(root=vault_root),
+                "speak": Speak(piper_model=piper_model),
+            }
+
+        self.wake = engines.get("wake")
+        self.endpointer = engines.get("endpointer")
+        self.stt = engines.get("stt")
+        self.brain = engines.get("brain")
+        self.vault = engines.get("vault")
+        self.speak = engines.get("speak")
+
+        for req in ("wake", "endpointer", "stt", "brain", "vault", "speak"):
+            if getattr(self, req) is None:
+                raise RuntimeError(f"Engine {req} is unavailable")
+
+        # Reset states for new connection
+        self.wake.reset()
+        self.endpointer.reset()
 
         self.last_seq = 0
         self.is_ptt = False
         self.processing_task: asyncio.Task | None = None
+        self.speak_watchdog_task: asyncio.Task | None = None
+
+    def _busy(self) -> bool:
+        """P7: Returns True if utterance processing is active."""
+        return self.processing_task is not None and not self.processing_task.done()
 
     async def emit(self, data: dict) -> None:
         try:
@@ -68,11 +108,21 @@ class PipelineOrchestrator:
             logger.info("State transition -> %s", new_state)
             await self.emit({"t": "state", "state": new_state})
 
+    async def _speak_watchdog(self, seconds: float = 12.0) -> None:
+        """P6: Prevents app from being stuck in speaking state if audio ends or fails."""
+        await asyncio.sleep(seconds)
+        if self.state == "speaking":
+            logger.warning("TTS watchdog fired — forcing idle")
+            await self.set_state("idle")
+
     async def handle_cancel(self) -> None:
         logger.info("Cancel requested.")
         if self.processing_task and not self.processing_task.done():
             self.processing_task.cancel()
             self.processing_task = None
+        if self.speak_watchdog_task and not self.speak_watchdog_task.done():
+            self.speak_watchdog_task.cancel()
+            self.speak_watchdog_task = None
         self.utterance_frames.clear()
         self.endpointer.reset()
         self.wake.reset()
@@ -106,9 +156,18 @@ class PipelineOrchestrator:
 
         # 2. STT via whisper-server
         loop = asyncio.get_running_loop()
-        stt_res = await loop.run_in_executor(None, self.stt.transcribe, wav_bytes)
-        text = stt_res.get("text", "").strip()
-        elapsed_ms = stt_res.get("ms", 0.0)
+        try:
+            stt_res = await loop.run_in_executor(None, self.stt.transcribe, wav_bytes)
+            text = stt_res.get("text", "").strip()
+            elapsed_ms = stt_res.get("ms", 0.0)
+            if audit:
+                audit.event("stt.ok", ms=elapsed_ms, text=text[:120])
+        except Exception as e:
+            logger.exception("STT processing error: %s", e)
+            if audit:
+                audit.event("stt.fail", error=str(e))
+            text = ""
+            elapsed_ms = 0.0
 
         await self.emit({"t": "transcript", "text": text, "ms": elapsed_ms})
 
@@ -118,14 +177,31 @@ class PipelineOrchestrator:
         # 3. Brain formatting via Ollama
         brain_res = None
         if not is_unclear:
-            brain_res = await loop.run_in_executor(None, self.brain.format, text)
+            t_llm = time.perf_counter()
+            try:
+                brain_res = await loop.run_in_executor(None, self.brain.format, text)
+                ms_llm = (time.perf_counter() - t_llm) * 1000.0
+                if audit:
+                    audit.event("llm.ok", ms=ms_llm, kind=brain_res.get("kind") if brain_res else "none")
+            except Exception as e:
+                logger.exception("Brain formatting error: %s", e)
+                if audit:
+                    audit.event("llm.fail", error=str(e))
+                brain_res = None
 
         # 4. Routing logic
         if is_unclear or (brain_res and brain_res.get("kind") == "unclear"):
             logger.info("Utterance unclear -> spoken prompt.")
             reply_text = "I didn't catch that. Say it again?"
+            t_tts = time.perf_counter()
             speak_res = await loop.run_in_executor(None, self.speak.say, reply_text)
+            ms_tts = (time.perf_counter() - t_tts) * 1000.0
+            if audit:
+                audit.event("tts.ok", ms=ms_tts, text=reply_text)
             await self.set_state("speaking")
+            if self.speak_watchdog_task and not self.speak_watchdog_task.done():
+                self.speak_watchdog_task.cancel()
+            self.speak_watchdog_task = asyncio.create_task(self._speak_watchdog(12.0))
             await self.emit({
                 "t": "say",
                 "text": reply_text,
@@ -138,6 +214,8 @@ class PipelineOrchestrator:
             note_title = " ".join(text.split()[:5])
             note_body = f"- {text}"
             note_data = await loop.run_in_executor(None, self.vault.create, note_title, note_body)
+            if audit:
+                audit.event("vault.write", path=note_data.get("path", ""))
             await self.emit({
                 "t": "note",
                 "id": note_data["id"],
@@ -146,8 +224,15 @@ class PipelineOrchestrator:
                 "body": note_data["body"],
             })
             reply_text = "Saved."
+            t_tts = time.perf_counter()
             speak_res = await loop.run_in_executor(None, self.speak.say, reply_text)
+            ms_tts = (time.perf_counter() - t_tts) * 1000.0
+            if audit:
+                audit.event("tts.ok", ms=ms_tts, text=reply_text)
             await self.set_state("speaking")
+            if self.speak_watchdog_task and not self.speak_watchdog_task.done():
+                self.speak_watchdog_task.cancel()
+            self.speak_watchdog_task = asyncio.create_task(self._speak_watchdog(12.0))
             await self.emit({
                 "t": "say",
                 "text": reply_text,
@@ -159,6 +244,8 @@ class PipelineOrchestrator:
             title = brain_res.get("title", "Untitled Note")
             body = brain_res.get("body", "")
             note_data = await loop.run_in_executor(None, self.vault.create, title, body)
+            if audit:
+                audit.event("vault.write", path=note_data.get("path", ""))
             await self.emit({
                 "t": "note",
                 "id": note_data["id"],
@@ -167,8 +254,15 @@ class PipelineOrchestrator:
                 "body": note_data["body"],
             })
             reply_text = "Noted."
+            t_tts = time.perf_counter()
             speak_res = await loop.run_in_executor(None, self.speak.say, reply_text)
+            ms_tts = (time.perf_counter() - t_tts) * 1000.0
+            if audit:
+                audit.event("tts.ok", ms=ms_tts, text=reply_text)
             await self.set_state("speaking")
+            if self.speak_watchdog_task and not self.speak_watchdog_task.done():
+                self.speak_watchdog_task.cancel()
+            self.speak_watchdog_task = asyncio.create_task(self._speak_watchdog(12.0))
             await self.emit({
                 "t": "say",
                 "text": reply_text,
@@ -183,15 +277,25 @@ class PipelineOrchestrator:
         # Wake detection (disabled when speaking)
         if self.state in ("idle", "listening") and not self.is_ptt:
             if self.wake.feed(pcm):
+                if audit:
+                    audit.event("wake", score=getattr(self.wake, "last_score", 1.0))
                 await self.on_wake_hit()
                 return
 
         # Endpointer VAD when listening
         if self.state == "listening":
             self.utterance_frames.append(pcm)
+
+            # P11: Cap utterance frames to 1000 frames (20 s) to prevent unbounded memory growth
+            if len(self.utterance_frames) > 1000:
+                self.utterance_frames = self.utterance_frames[-1000:]
+
             evt = self.endpointer.feed(pcm)
 
-            if evt == "end" and not self.is_ptt:
+            # P7: Don't spawn task if busy
+            if evt == "end" and not self.is_ptt and not self._busy():
+                if audit:
+                    audit.event("utterance.end", frames=len(self.utterance_frames))
                 # Capture pre-roll (300 ms = 15 frames)
                 preroll_frames = list(self.ring_buffer)[-len(self.utterance_frames) - 15 : -len(self.utterance_frames)]
                 full_utterance = preroll_frames + self.utterance_frames
@@ -202,6 +306,11 @@ class PipelineOrchestrator:
 
     async def run_demo(self, fixture_name: str) -> None:
         """Stream fixture WAV at real-time pace through the pipeline."""
+        # P7: Guard against racing a busy utterance
+        if self._busy():
+            logger.warning("Pipeline is busy, ignoring demo request.")
+            return
+
         fixture_path = os.path.join(ROOT_DIR, "tests", "fixtures", fixture_name)
         if not os.path.exists(fixture_path):
             logger.error("Demo fixture not found: %s", fixture_path)
@@ -218,20 +327,30 @@ class PipelineOrchestrator:
 
         chunk_size = 320
         for i in range(0, len(samples), chunk_size):
+            if self._busy():
+                return
             chunk = samples[i : i + chunk_size]
             if len(chunk) < chunk_size:
                 chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
             await self.handle_audio_frame(chunk)
             await asyncio.sleep(0.02)
 
-        # Force end of utterance if still listening
-        if self.state == "listening":
+        # Force end of utterance if still listening and not busy
+        if self.state == "listening" and not self._busy():
             full_utterance = list(self.utterance_frames)
             self.utterance_frames = []
             self.processing_task = asyncio.create_task(self.process_utterance(full_utterance))
 
 
-async def handle_connection(websocket, whisper_url, ollama_url, ollama_model, piper_model, vault_root):
+async def handle_connection(
+    websocket,
+    engines: dict | None = None,
+    whisper_url: str = "http://127.0.0.1:8787/inference",
+    ollama_url: str = "http://127.0.0.1:11434/api/chat",
+    ollama_model: str = "qwen2.5:3b-instruct",
+    piper_model: str = os.path.expanduser("~/piper/en_US-lessac-medium.onnx"),
+    vault_root: str = os.path.expanduser("~/Documents/Hey Scribe"),
+):
     # Verify token
     raw_path = getattr(websocket, "path", None)
     if raw_path is None and hasattr(websocket, "request"):
@@ -248,19 +367,23 @@ async def handle_connection(websocket, whisper_url, ollama_url, ollama_model, pi
         return
 
     logger.info("Client connected and authorized.")
-    orchestrator = PipelineOrchestrator(
-        websocket, whisper_url, ollama_url, ollama_model, piper_model, vault_root
-    )
+    if audit:
+        audit.event("client.connect")
 
-    await websocket.send(
-        json.dumps({
-            "t": "ready",
-            "model": ollama_model,
-            "voice": os.path.basename(piper_model),
-        })
-    )
-
+    # P2: Move orchestrator inside try to catch initialization failures and surface to client
     try:
+        orchestrator = PipelineOrchestrator(
+            websocket, engines, whisper_url, ollama_url, ollama_model, piper_model, vault_root
+        )
+
+        await websocket.send(
+            json.dumps({
+                "t": "ready",
+                "model": ollama_model,
+                "voice": os.path.basename(piper_model),
+            })
+        )
+
         async for message in websocket:
             if isinstance(message, bytes):
                 # Unpack binary frame: 0x01 | uint32 seq | 640 bytes PCM
@@ -284,6 +407,9 @@ async def handle_connection(websocket, whisper_url, ollama_url, ollama_model, pi
                     if msg_type == "cancel":
                         await orchestrator.handle_cancel()
                     elif msg_type == "playback_done":
+                        if orchestrator.speak_watchdog_task and not orchestrator.speak_watchdog_task.done():
+                            orchestrator.speak_watchdog_task.cancel()
+                            orchestrator.speak_watchdog_task = None
                         if orchestrator.state == "speaking":
                             await orchestrator.set_state("idle")
                     elif msg_type == "ptt":
@@ -292,7 +418,7 @@ async def handle_connection(websocket, whisper_url, ollama_url, ollama_model, pi
                         if on:
                             await orchestrator.on_wake_hit()
                         else:
-                            if orchestrator.state == "listening":
+                            if orchestrator.state == "listening" and not orchestrator._busy():
                                 full_utterance = list(orchestrator.utterance_frames)
                                 orchestrator.utterance_frames = []
                                 orchestrator.processing_task = asyncio.create_task(
@@ -307,13 +433,21 @@ async def handle_connection(websocket, whisper_url, ollama_url, ollama_model, pi
     except websockets.exceptions.ConnectionClosed:
         logger.info("Client disconnected.")
     except Exception as e:
-        logger.error("Error in websocket session: %s", e)
+        logger.exception("Session failed: %s", e)
+        try:
+            await websocket.send(json.dumps({"t": "error", "kind": "engine_init", "msg": str(e)[:200]}))
+        except Exception:
+            pass
 
 
 async def main_async(port: int, token: str, whisper_url: str, ollama_url: str, ollama_model: str, piper_model: str, vault_root: str):
-    global EXPECTED_TOKEN
+    global EXPECTED_TOKEN, audit
     if token:
         EXPECTED_TOKEN = token
+
+    t_boot = time.time()
+    if audit:
+        audit.event("boot", pid=os.getpid(), port=port, model=ollama_model, whisper=whisper_url, vault=vault_root)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -323,7 +457,32 @@ async def main_async(port: int, token: str, whisper_url: str, ollama_url: str, o
         except NotImplementedError:
             pass
 
-    handler = lambda ws: handle_connection(ws, whisper_url, ollama_url, ollama_model, piper_model, vault_root)
+    # P3 + P4: Build engines once off the event loop before accepting clients
+    engines = {}
+    engine_factories = [
+        ("wake", lambda: Wake()),
+        ("endpointer", lambda: Endpointer()),
+        ("stt", lambda: Stt(base_url=whisper_url)),
+        ("brain", lambda: Brain(ollama_url=ollama_url, model=ollama_model)),
+        ("vault", lambda: Vault(root=vault_root)),
+        ("speak", lambda: Speak(piper_model=piper_model)),
+    ]
+
+    for name, factory in engine_factories:
+        t0 = time.perf_counter()
+        try:
+            engines[name] = await loop.run_in_executor(None, factory)
+            ms = (time.perf_counter() - t0) * 1000.0
+            logger.info("Engine %s initialized in %.1f ms", name, ms)
+            if audit:
+                audit.event(f"engine.init.{name}.ok", ms=ms)
+        except Exception as e:
+            logger.exception("Engine %s failed to initialize: %s", name, e)
+            engines[name] = None
+            if audit:
+                audit.event(f"engine.init.{name}.fail", error=str(e))
+
+    handler = lambda ws: handle_connection(ws, engines, whisper_url, ollama_url, ollama_model, piper_model, vault_root)
 
     async with websockets.serve(handler, "127.0.0.1", port) as server:
         actual_port = port
@@ -331,12 +490,18 @@ async def main_async(port: int, token: str, whisper_url: str, ollama_url: str, o
             actual_port = s.getsockname()[1]
             break
 
+        if audit:
+            audit.event("ready", port=actual_port)
+
         sys.stdout.write(f'READY {{"port":{actual_port}}}\n')
         sys.stdout.flush()
         logger.info("Sidecar server listening on ws://127.0.0.1:%d", actual_port)
 
         await stop_event.wait()
-        logger.info("Sidecar server shutdown completed.")
+        uptime = round(time.time() - t_boot, 1)
+        if audit:
+            audit.event("shutdown", uptime_s=uptime, reason="sigterm")
+        logger.info("Sidecar server shutdown completed (uptime: %.1fs).", uptime)
 
 
 def main():
