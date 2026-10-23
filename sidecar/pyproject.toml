@@ -1,0 +1,12 @@
+[project]
+name = "scribe-sidecar"
+version = "0.1.0"
+description = "Hey Scribe Python sidecar"
+requires-python = ">=3.11"
+dependencies = [
+    "websockets>=12.0",
+    "numpy>=1.26.0",
+    "httpx>=0.27.0",
+    "onnxruntime>=1.17.0",
+    "openwakeword>=0.5.1",
+]

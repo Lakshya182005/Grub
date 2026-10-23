@@ -1,0 +1,1 @@
+"""Hey Scribe sidecar package."""

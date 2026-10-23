@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0b0e14;
+    color: #f1f5f9;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+  }
+}
+
+/* Orb breathing animation for idle state */
+@keyframes orb-breathe {
+  0%, 100% {
+    transform: scale(0.96);
+    opacity: 0.65;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 0.95;
+  }
+}
+
+@keyframes orb-pulse {
+  0%, 100% {
+    transform: scale(0.97);
+    filter: drop-shadow(0 0 20px rgba(56, 189, 248, 0.3));
+  }
+  50% {
+    transform: scale(1.03);
+    filter: drop-shadow(0 0 35px rgba(56, 189, 248, 0.6));
+  }
+}
+
+.animate-orb-idle {
+  animation: orb-breathe 4s ease-in-out infinite;
+}
+
+.animate-orb-thinking {
+  animation: orb-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-orb-idle,
+  .animate-orb-thinking {
+    animation: none !important;
+  }
+}

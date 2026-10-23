@@ -9,6 +9,7 @@
 """scripts/preflight.py — Check all 4 engines and report measured metrics."""
 
 import argparse
+import glob
 import json
 import os
 import shutil
@@ -18,6 +19,12 @@ import time
 import urllib.error
 import urllib.request
 import wave
+
+# Ensure sidecar virtualenv packages are discoverable if running with system python
+_sidecar_site_packages = glob.glob(os.path.join(os.path.dirname(__file__), "..", "sidecar", ".venv", "lib", "python*", "site-packages"))
+for p in _sidecar_site_packages:
+    if os.path.isdir(p) and p not in sys.path:
+        sys.path.insert(0, p)
 
 NOTE_PROMPT = """You convert one spoken transcript into a note. Reply with JSON only:
 {"kind":"note"|"unclear","title":"3-7 words","body":"markdown bullets"}
