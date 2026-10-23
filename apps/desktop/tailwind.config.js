@@ -7,15 +7,17 @@ export default {
   theme: {
     extend: {
       colors: {
-        bg: '#0b0e14',
-        card: '#131823',
-        rail: '#0f141d',
-        accent: {
-          cyan: '#38bdf8',
-          blue: '#3b82f6',
-          violet: '#8b5cf6',
-          emerald: '#10b981'
-        }
+        bg: '#0B0E14',
+        accent: '#7C8CF8',
+        'text-main': '#E6E9F2',
+        muted: '#8A93A6',
+        hairline: '#1C2230',
+        card: '#121620',
+        'card-hover': '#181E2C',
+        speaking: '#34D399'
+      },
+      letterSpacing: {
+        chip: '0.08em'
       }
     }
   },

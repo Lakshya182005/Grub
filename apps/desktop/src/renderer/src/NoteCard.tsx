@@ -6,6 +6,7 @@ export interface NoteItem {
   body: string
   path: string
   timestamp: string
+  isNew?: boolean
 }
 
 interface NoteCardProps {
@@ -14,46 +15,38 @@ interface NoteCardProps {
 }
 
 export const NoteCard: React.FC<NoteCardProps> = ({ note, onReveal }) => {
-  // Parse body into bullet lines
-  const bullets = note.body
+  // Extract first body bullet
+  const lines = note.body
     .split('\n')
-    .map((line) => line.replace(/^[-*]\s*/, '').trim())
-    .filter((line) => line.length > 0)
+    .map((l) => l.replace(/^[-*]\s*/, '').trim())
+    .filter((l) => l.length > 0)
+
+  const firstBullet = lines[0] || ''
 
   return (
     <div
       onClick={() => onReveal(note.path)}
-      className="group relative p-4 mb-3 rounded-xl bg-slate-900/70 hover:bg-slate-800/90 border border-slate-800/80 hover:border-sky-500/50 shadow-lg hover:shadow-sky-500/10 cursor-pointer transition-all duration-300 transform hover:-translate-y-0.5 active:translate-y-0 select-none animate-in fade-in slide-in-from-top-4"
+      title="Click to reveal note in Finder"
+      className={`group relative p-3.5 mb-2.5 rounded-lg bg-[#121620] hover:bg-[#181E2C] border border-[#1C2230] cursor-pointer transition-colors duration-150 select-none ${
+        note.isNew ? 'animate-card-spring animate-card-glow' : ''
+      }`}
     >
-      {/* Header: Title + Timestamp */}
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <h4 className="text-sm font-semibold text-slate-100 group-hover:text-sky-300 transition-colors leading-snug">
+      {/* Header: 15px Semibold Title + 13px Right-Aligned Time */}
+      <div className="flex items-start justify-between gap-3 mb-1">
+        <h4 className="text-[15px] font-semibold text-[#E6E9F2] group-hover:text-white transition-colors leading-snug line-clamp-2">
           {note.title}
         </h4>
-        <span className="text-[10px] text-slate-500 font-mono shrink-0">
+        <span className="text-[13px] text-[#8A93A6] shrink-0 font-normal pt-0.5">
           {note.timestamp}
         </span>
       </div>
 
-      {/* Bullets */}
-      <ul className="space-y-1 my-2">
-        {bullets.map((bullet, idx) => (
-          <li key={idx} className="flex items-start text-xs text-slate-300 leading-relaxed">
-            <span className="w-1.5 h-1.5 rounded-full bg-sky-400/60 mt-1.5 mr-2 shrink-0 group-hover:bg-sky-400 transition-colors" />
-            <span>{bullet}</span>
-          </li>
-        ))}
-      </ul>
-
-      {/* Footer hint */}
-      <div className="mt-2.5 pt-2 border-t border-slate-800/50 flex items-center justify-between text-[10px] text-slate-500 group-hover:text-slate-400 transition-colors">
-        <span className="truncate max-w-[200px] font-mono opacity-60">
-          {note.path.split('/').pop()}
-        </span>
-        <span className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center text-sky-400 font-medium">
-          Open in Finder &rarr;
-        </span>
-      </div>
+      {/* First Body Bullet clamped to 2 lines */}
+      {firstBullet && (
+        <p className="text-[13px] text-[#8A93A6] line-clamp-2 leading-relaxed">
+          {firstBullet}
+        </p>
+      )}
     </div>
   )
 }

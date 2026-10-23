@@ -5,45 +5,119 @@
 @layer base {
   body {
     background-color: #0b0e14;
-    color: #f1f5f9;
+    color: #e6e9f2;
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 }
 
-/* Orb breathing animation for idle state */
-@keyframes orb-breathe {
+/* Orb Idle Core Breathing: 1.00 -> 1.03 on 4 s ease-in-out */
+@keyframes orb-idle-breathe {
   0%, 100% {
-    transform: scale(0.96);
-    opacity: 0.65;
-  }
-  50% {
-    transform: scale(1.04);
-    opacity: 0.95;
-  }
-}
-
-@keyframes orb-pulse {
-  0%, 100% {
-    transform: scale(0.97);
-    filter: drop-shadow(0 0 20px rgba(56, 189, 248, 0.3));
+    transform: scale(1.0);
   }
   50% {
     transform: scale(1.03);
-    filter: drop-shadow(0 0 35px rgba(56, 189, 248, 0.6));
   }
 }
 
-.animate-orb-idle {
-  animation: orb-breathe 4s ease-in-out infinite;
+/* Orb Thinking Core Pulse: 1.5 s */
+@keyframes orb-think-pulse {
+  0%, 100% {
+    transform: scale(0.96);
+    opacity: 0.82;
+  }
+  50% {
+    transform: scale(1.04);
+    opacity: 1.0;
+  }
 }
 
-.animate-orb-thinking {
-  animation: orb-pulse 1.6s ease-in-out infinite;
+/* Orb Speaking Slow Rotation */
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Note Card: 180 ms spring from 8 px below */
+@keyframes card-spring-in {
+  0% {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  70% {
+    transform: translateY(-1px);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Note Card: 1 s accent left-border glow */
+@keyframes card-left-glow {
+  0% {
+    border-left-color: #7c8cf8;
+    box-shadow: -3px 0 12px rgba(124, 140, 248, 0.45);
+  }
+  80% {
+    border-left-color: #7c8cf8;
+    box-shadow: -1px 0 6px rgba(124, 140, 248, 0.2);
+  }
+  100% {
+    border-left-color: #1c2230;
+    box-shadow: none;
+  }
+}
+
+/* Transcript Word Fade-in (40 ms stagger) */
+@keyframes word-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-orb-idle-core {
+  animation: orb-idle-breathe 4s ease-in-out infinite;
+}
+
+.animate-orb-thinking-core {
+  animation: orb-think-pulse 1.5s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 16s linear infinite;
+}
+
+.animate-card-spring {
+  animation: card-spring-in 180ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.animate-card-glow {
+  animation: card-left-glow 1000ms ease-out forwards;
+}
+
+.animate-word-fade {
+  animation: word-fade-in 180ms ease-out forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-orb-idle,
-  .animate-orb-thinking {
+  .animate-orb-idle-core,
+  .animate-orb-thinking-core,
+  .animate-spin-slow,
+  .animate-card-spring,
+  .animate-card-glow,
+  .animate-word-fade {
     animation: none !important;
   }
 }

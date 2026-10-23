@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, systemPreferences, shell, globalShortcut, Tray, Menu, nativeImage } from 'electron'
 import { join, resolve } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { homedir } from 'os'
 import { spawn, ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 
@@ -17,7 +18,18 @@ function getRepoRoot(): string {
   if (app.isPackaged) {
     return process.resourcesPath
   }
-  return resolve(__dirname, '../../..')
+  let current = __dirname
+  while (current !== resolve(current, '..')) {
+    if (existsSync(join(current, 'AGENTS.md')) || existsSync(join(current, 'docs/00-MVP-PLAN.md'))) {
+      return current
+    }
+    current = resolve(current, '..')
+  }
+  return resolve(__dirname, '../../../..')
+}
+
+function getNotesFolder(): string {
+  return join(homedir(), 'Documents', 'Hey Scribe')
 }
 
 async function getMicrophoneStatus(): Promise<string> {
@@ -108,13 +120,52 @@ function spawnSidecar(): void {
   })
 }
 
+function updateTrayState(state: string): void {
+  if (!tray) return
+
+  switch (state) {
+    case 'listening':
+      tray.setTitle(' ● listening')
+      break
+    case 'thinking':
+      tray.setTitle(' ● thinking')
+      break
+    case 'speaking':
+      tray.setTitle(' ● speaking')
+      break
+    default:
+      tray.setTitle('')
+      break
+  }
+}
+
+function triggerDemo(file: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('scribe:trigger-demo', file)
+  }
+}
+
 function createTray(): void {
-  // Create simple 16x16 icon
-  const icon = nativeImage.createEmpty()
+  const iconPaths = [
+    join(__dirname, 'trayTemplate.png'),
+    join(__dirname, '../../resources/trayTemplate.png'),
+    join(__dirname, '../../src/main/trayTemplate.png')
+  ]
+
+  let icon = nativeImage.createEmpty()
+  for (const p of iconPaths) {
+    if (existsSync(p)) {
+      icon = nativeImage.createFromPath(p)
+      icon.setTemplateImage(true)
+      break
+    }
+  }
+
   tray = new Tray(icon)
+
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: 'Show window',
+      label: 'Show Hey Scribe',
       click: (): void => {
         if (mainWindow) {
           if (mainWindow.isMinimized()) mainWindow.restore()
@@ -125,15 +176,119 @@ function createTray(): void {
     },
     { type: 'separator' },
     {
+      label: 'Demo Mode',
+      submenu: [
+        {
+          label: 'hello.wav (Design review)',
+          click: (): void => triggerDemo('hello.wav')
+        },
+        {
+          label: 'wake.wav (Wake phrase)',
+          click: (): void => triggerDemo('wake.wav')
+        }
+      ]
+    },
+    {
+      label: 'Open notes folder',
+      click: (): void => {
+        const folder = getNotesFolder()
+        mkdirSync(folder, { recursive: true })
+        shell.openPath(folder)
+      }
+    },
+    { type: 'separator' },
+    {
       label: 'Quit',
+      accelerator: 'CommandOrControl+Q',
       click: (): void => {
         isQuitting = true
         app.quit()
       }
     }
   ])
+
   tray.setToolTip('Hey Scribe')
   tray.setContextMenu(contextMenu)
+}
+
+function createApplicationMenu(): void {
+  const isMac = process.platform === 'darwin'
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' as const },
+              { type: 'separator' as const },
+              { role: 'services' as const },
+              { type: 'separator' as const },
+              { role: 'hide' as const },
+              { role: 'hideOthers' as const },
+              { role: 'unhide' as const },
+              { type: 'separator' as const },
+              { role: 'quit' as const }
+            ]
+          }
+        ]
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Open Notes Folder',
+          accelerator: 'CmdOrCtrl+O',
+          click: (): void => {
+            const folder = getNotesFolder()
+            mkdirSync(folder, { recursive: true })
+            shell.openPath(folder)
+          }
+        },
+        { type: 'separator' },
+        ...(isMac ? [{ role: 'close' as const }] : [{ role: 'quit' as const }])
+      ]
+    },
+    {
+      label: 'Demo Mode',
+      submenu: [
+        {
+          label: 'Replay hello.wav',
+          accelerator: 'CmdOrCtrl+D',
+          click: (): void => triggerDemo('hello.wav')
+        },
+        {
+          label: 'Replay wake.wav',
+          click: (): void => triggerDemo('wake.wav')
+        }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' as const },
+        { role: 'redo' as const },
+        { type: 'separator' as const },
+        { role: 'cut' as const },
+        { role: 'copy' as const },
+        { role: 'paste' as const },
+        { role: 'selectAll' as const }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' as const },
+        { role: 'zoom' as const },
+        ...(isMac
+          ? [{ type: 'separator' as const }, { role: 'front' as const }]
+          : [{ role: 'close' as const }])
+      ]
+    }
+  ]
+
+  const menu = Menu.buildFromTemplate(template)
+  Menu.setApplicationMenu(menu)
 }
 
 function createWindow(): void {
@@ -195,6 +350,29 @@ ipcMain.handle('scribe:reveal-file', (_event, filePath: string) => {
   }
 })
 
+ipcMain.handle('scribe:open-notes-folder', () => {
+  const folder = getNotesFolder()
+  mkdirSync(folder, { recursive: true })
+  shell.openPath(folder)
+})
+
+ipcMain.handle('scribe:set-state', (_event, state: string) => {
+  updateTrayState(state)
+})
+
+ipcMain.handle('scribe:capture-screenshot', async (_event, name: string) => {
+  if (!mainWindow) throw new Error('No window')
+  const image = await mainWindow.webContents.capturePage()
+  const pngBuffer = image.toPNG()
+  const repoRoot = getRepoRoot()
+  const screenshotDir = join(repoRoot, 'screenshots')
+  mkdirSync(screenshotDir, { recursive: true })
+  const filePath = join(screenshotDir, `${name}.png`)
+  writeFileSync(filePath, pngBuffer)
+  console.log(`[main] Screenshot saved: ${filePath}`)
+  return filePath
+})
+
 ipcMain.handle('scribe:get-sidecar-info', () => {
   if (sidecarPort) {
     return { port: sidecarPort, token: sidecarToken, status: 'running' }
@@ -202,9 +380,78 @@ ipcMain.handle('scribe:get-sidecar-info', () => {
   return { port: null, token: sidecarToken, status: 'starting' }
 })
 
+async function runScreenshotSuite(): Promise<void> {
+  if (!mainWindow) return
+  console.log('[acceptance] Running automated screenshot suite...')
+
+  const repoRoot = getRepoRoot()
+  const screenshotDir = join(repoRoot, 'screenshots')
+  mkdirSync(screenshotDir, { recursive: true })
+
+  const capture = async (name: string): Promise<void> => {
+    if (!mainWindow) return
+    const image = await mainWindow.webContents.capturePage()
+    const filePath = join(screenshotDir, `${name}.png`)
+    writeFileSync(filePath, image.toPNG())
+    console.log(`[acceptance] Captured: ${filePath}`)
+  }
+
+  // Ensure window is 1280x820
+  mainWindow.setSize(1280, 820)
+  await new Promise((r) => setTimeout(r, 600))
+
+  // 1. Idle state
+  await mainWindow.webContents.executeJavaScript("window.setTestState && window.setTestState('idle')")
+  await new Promise((r) => setTimeout(r, 300))
+  await capture('orb-idle-1280x820')
+
+  // 2. Listening state
+  await mainWindow.webContents.executeJavaScript("window.setTestState && window.setTestState('listening')")
+  await new Promise((r) => setTimeout(r, 300))
+  await capture('orb-listening-1280x820')
+
+  // 3. Thinking state
+  await mainWindow.webContents.executeJavaScript(
+    "window.setTestState && window.setTestState('thinking'); window.setTestTranscript && window.setTestTranscript('Design review moved to Thursday at 4, Priya is presenting.');"
+  )
+  await new Promise((r) => setTimeout(r, 300))
+  await capture('orb-thinking-1280x820')
+
+  // 4. Speaking state
+  await mainWindow.webContents.executeJavaScript("window.setTestState && window.setTestState('speaking')")
+  await new Promise((r) => setTimeout(r, 300))
+  await capture('orb-speaking-1280x820')
+
+  // 5. Two Note Cards in rail
+  await mainWindow.webContents.executeJavaScript("window.setTestState && window.setTestState('idle'); window.addTestNotes && window.addTestNotes();")
+  await new Promise((r) => setTimeout(r, 300))
+  await capture('two-notes-1280x820')
+
+  // 6. Test 1440x900 resolution
+  mainWindow.setSize(1440, 900)
+  await new Promise((r) => setTimeout(r, 400))
+  await capture('two-notes-1440x900')
+
+  console.log('[acceptance] All 6 screenshots captured successfully!')
+  isQuitting = true
+  app.quit()
+}
+
 app.whenReady().then(async () => {
+  createApplicationMenu()
   createTray()
   createWindow()
+
+  if (process.argv.includes('--capture-screenshots')) {
+    mainWindow?.webContents.on('did-finish-load', () => {
+      runScreenshotSuite().catch((err) => {
+        console.error('[acceptance] Screenshot error:', err)
+        app.exit(1)
+      })
+    })
+    return
+  }
+
   spawnSidecar()
 
   // Register Alt+Space global shortcut for PTT toggle

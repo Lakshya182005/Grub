@@ -18,16 +18,23 @@ export interface ScribeAPI {
   getMicStatus: () => Promise<string>
   openMicSettings: () => Promise<void>
   revealFile: (path: string) => Promise<void>
+  openNotesFolder: () => Promise<void>
+  setState: (state: string) => Promise<void>
+  captureScreenshot: (name: string) => Promise<string>
   getSidecarInfo: () => Promise<{ port: number | null; token: string; status: string }>
   onSidecarReady: (callback: (info: SidecarReadyInfo) => void) => () => void
   onSidecarStatus: (callback: (info: SidecarStatusInfo) => void) => () => void
   onPttChange: (callback: (info: PttEventInfo) => void) => () => void
+  onTriggerDemo: (callback: (file: string) => void) => () => void
 }
 
 const scribeAPI: ScribeAPI = {
   getMicStatus: (): Promise<string> => ipcRenderer.invoke('scribe:get-mic-status'),
   openMicSettings: (): Promise<void> => ipcRenderer.invoke('scribe:open-mic-settings'),
   revealFile: (path: string): Promise<void> => ipcRenderer.invoke('scribe:reveal-file', path),
+  openNotesFolder: (): Promise<void> => ipcRenderer.invoke('scribe:open-notes-folder'),
+  setState: (state: string): Promise<void> => ipcRenderer.invoke('scribe:set-state', state),
+  captureScreenshot: (name: string): Promise<string> => ipcRenderer.invoke('scribe:capture-screenshot', name),
   getSidecarInfo: (): Promise<{ port: number | null; token: string; status: string }> =>
     ipcRenderer.invoke('scribe:get-sidecar-info'),
 
@@ -52,6 +59,14 @@ const scribeAPI: ScribeAPI = {
     ipcRenderer.on('scribe:ptt-change', subscription)
     return (): void => {
       ipcRenderer.removeListener('scribe:ptt-change', subscription)
+    }
+  },
+
+  onTriggerDemo: (callback: (file: string) => void): (() => void) => {
+    const subscription = (_event: IpcRendererEvent, file: string): void => callback(file)
+    ipcRenderer.on('scribe:trigger-demo', subscription)
+    return (): void => {
+      ipcRenderer.removeListener('scribe:trigger-demo', subscription)
     }
   }
 }

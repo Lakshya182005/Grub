@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Orb, OrbState } from './Orb'
 import { NoteCard, NoteItem } from './NoteCard'
@@ -12,11 +12,19 @@ declare global {
       getMicStatus: () => Promise<string>
       openMicSettings: () => Promise<void>
       revealFile: (path: string) => Promise<void>
+      openNotesFolder: () => Promise<void>
+      setState: (state: string) => Promise<void>
+      captureScreenshot: (name: string) => Promise<string>
       getSidecarInfo: () => Promise<{ port: number | null; token: string; status: string }>
       onSidecarReady: (callback: (info: { port: number; token: string }) => void) => () => void
       onSidecarStatus: (callback: (info: { status: string; code?: number | string }) => void) => () => void
       onPttChange: (callback: (info: { on: boolean }) => void) => () => void
+      onTriggerDemo: (callback: (file: string) => void) => () => void
     }
+    // Test hooks for acceptance screenshot automation
+    setTestState?: (state: OrbState) => void
+    setTestTranscript?: (text: string) => void
+    addTestNotes?: () => void
   }
 }
 
@@ -27,10 +35,12 @@ export const App: React.FC = () => {
   const [sidecarStatus, setSidecarStatus] = useState<'starting' | 'running' | 'crashed'>('starting')
   const [fps, setFps] = useState<number>(0)
 
-  // Transcript typewriter state
-  const [fullTranscript, setFullTranscript] = useState<string>('')
-  const [displayedTranscript, setDisplayedTranscript] = useState<string>('')
-  const [spokenReply, setSpokenReply] = useState<string>('')
+  // Transcript state
+  const [transcriptText, setTranscriptText] = useState<string>('')
+  const [showQuietHint, setShowQuietHint] = useState<boolean>(true)
+
+  // 10s fading bottom hint bar
+  const [showHintBar, setShowHintBar] = useState<boolean>(true)
 
   // Note cards list
   const [notes, setNotes] = useState<NoteItem[]>([])
@@ -40,6 +50,7 @@ export const App: React.FC = () => {
   const activeAudioSourceRef = useRef<AudioBufferSourceNode | null>(null)
   const activeAudioCtxRef = useRef<AudioContext | null>(null)
   const wakeAudioRef = useRef<HTMLAudioElement | null>(null)
+  const idleClearTimerRef = useRef<NodeJS.Timeout | null>(null)
 
   // FPS tracking
   const frameCountRef = useRef<number>(0)
@@ -51,7 +62,7 @@ export const App: React.FC = () => {
       try {
         activeAudioSourceRef.current.stop()
       } catch {
-        // Ignored if already stopped
+        // Ignored
       }
       activeAudioSourceRef.current = null
     }
@@ -109,7 +120,7 @@ export const App: React.FC = () => {
   const playWakeChime = useCallback((): void => {
     if (!wakeAudioRef.current) {
       wakeAudioRef.current = new Audio('./Tink.aiff')
-      wakeAudioRef.current.volume = 0.6
+      wakeAudioRef.current.volume = 0.5
     }
     wakeAudioRef.current.currentTime = 0
     wakeAudioRef.current.play().catch(() => {})
@@ -118,18 +129,19 @@ export const App: React.FC = () => {
   // Handle Cancel
   const handleCancel = useCallback((): void => {
     stopPlayback()
-    setDisplayedTranscript('')
-    setFullTranscript('')
-    setSpokenReply('')
+    if (idleClearTimerRef.current) clearTimeout(idleClearTimerRef.current)
+    setTranscriptText('')
+    setShowQuietHint(true)
     setOrbState('idle')
+    window.scribe?.setState('idle')
     wsClientRef.current?.sendJson({ t: 'cancel' })
   }, [stopPlayback])
 
-  // Handle Demo mode
+  // Handle Demo trigger
   const handleTriggerDemo = useCallback((fileName = 'hello.wav'): void => {
-    setDisplayedTranscript('')
-    setFullTranscript('')
-    setSpokenReply('')
+    if (idleClearTimerRef.current) clearTimeout(idleClearTimerRef.current)
+    setTranscriptText('')
+    setShowQuietHint(false)
     wsClientRef.current?.sendJson({ t: 'demo', file: fileName })
   }, [])
 
@@ -140,35 +152,42 @@ export const App: React.FC = () => {
     }
   }, [])
 
-  // Typewriter reveal effect for transcript
+  // Fade out bottom hint bar after 10 s
   useEffect(() => {
-    if (!fullTranscript) {
-      setDisplayedTranscript('')
-      return
-    }
+    const timer = setTimeout(() => {
+      setShowHintBar(false)
+    }, 10000)
+    return (): void => clearTimeout(timer)
+  }, [])
 
-    setDisplayedTranscript('')
-    let currentIdx = 0
-    const interval = setInterval(() => {
-      currentIdx += 2
-      if (currentIdx >= fullTranscript.length) {
-        setDisplayedTranscript(fullTranscript)
-        clearInterval(interval)
-      } else {
-        setDisplayedTranscript(fullTranscript.slice(0, currentIdx))
+  // Notify main process of state changes (for tray text)
+  useEffect(() => {
+    window.scribe?.setState(orbState)
+  }, [orbState])
+
+  // Handle 4 s quiet hint transition on returning to idle
+  useEffect(() => {
+    if (orbState === 'idle') {
+      if (idleClearTimerRef.current) clearTimeout(idleClearTimerRef.current)
+      idleClearTimerRef.current = setTimeout(() => {
+        setTranscriptText('')
+        setShowQuietHint(true)
+      }, 4000)
+    } else {
+      if (idleClearTimerRef.current) {
+        clearTimeout(idleClearTimerRef.current)
+        idleClearTimerRef.current = null
       }
-    }, 20)
+      setShowQuietHint(false)
+    }
+  }, [orbState])
 
-    return (): void => clearInterval(interval)
-  }, [fullTranscript])
-
-  // Global Esc key listener
+  // Global Esc key & Cmd+D shortcut
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         handleCancel()
       } else if (e.key === 'd' && (e.metaKey || e.ctrlKey)) {
-        // Cmd+D shortcut for Demo Mode
         e.preventDefault()
         handleTriggerDemo('hello.wav')
       }
@@ -177,7 +196,7 @@ export const App: React.FC = () => {
     return (): void => window.removeEventListener('keydown', onKeyDown)
   }, [handleCancel, handleTriggerDemo])
 
-  // Initialize pipeline
+  // Initialize pipeline & IPC
   useEffect(() => {
     // 1. WebSocket Client
     const ws = new WebSocketClient({
@@ -186,28 +205,24 @@ export const App: React.FC = () => {
 
         if (msgType === 'wake') {
           playWakeChime()
-          setDisplayedTranscript('')
-          setFullTranscript('')
-          setSpokenReply('')
+          setTranscriptText('')
+          setShowQuietHint(false)
         } else if (msgType === 'state' && typeof msg.state === 'string') {
           setOrbState(msg.state as OrbState)
-          if (msg.state === 'idle') {
-            setSpokenReply('')
-          }
         } else if (msgType === 'transcript' && typeof msg.text === 'string') {
-          setFullTranscript(msg.text)
+          setTranscriptText(msg.text)
+          setShowQuietHint(false)
         } else if (msgType === 'note') {
           const newNote: NoteItem = {
             id: String(msg.id || Date.now()),
             title: String(msg.title || 'Untitled Note'),
             body: String(msg.body || ''),
             path: String(msg.path || ''),
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            isNew: true
           }
           setNotes((prev) => [newNote, ...prev])
         } else if (msgType === 'say') {
-          const text = String(msg.text || '')
-          setSpokenReply(text)
           if (msg.pcm_b64 && typeof msg.pcm_b64 === 'string') {
             playPcm(msg.pcm_b64, Number(msg.rate) || 22050)
           }
@@ -271,10 +286,15 @@ export const App: React.FC = () => {
         ws.sendJson({ t: 'ptt', on })
       })
 
+      const cleanupDemo = window.scribe.onTriggerDemo((file) => {
+        handleTriggerDemo(file)
+      })
+
       return (): void => {
         cleanupReady()
         cleanupStatus()
         cleanupPtt()
+        cleanupDemo()
         audio.stop()
         ws.destroy()
       }
@@ -291,54 +311,93 @@ export const App: React.FC = () => {
         ws.destroy()
       }
     }
-  }, [playPcm, playWakeChime])
+  }, [playPcm, playWakeChime, handleTriggerDemo])
 
-  const getStatusChipText = (): string => {
+  // Expose test hooks for automated screenshots
+  useEffect(() => {
+    window.setTestState = (state: OrbState): void => {
+      setOrbState(state)
+    }
+    window.setTestTranscript = (text: string): void => {
+      setTranscriptText(text)
+      setShowQuietHint(false)
+    }
+    window.addTestNotes = (): void => {
+      setNotes([
+        {
+          id: 'test-1',
+          title: 'Design review moved to Thursday at 4 PM',
+          body: '- Priya is presenting the new prototype\n- Review slide deck before the meeting',
+          path: '/Users/test/Documents/Hey Scribe/2026-10-23 2105 - Design review.md',
+          timestamp: '9:05 PM',
+          isNew: false
+        },
+        {
+          id: 'test-2',
+          title: 'Grocery list for dinner party',
+          body: '- Sourdough baguette\n- Gruyère cheese and olive oil',
+          path: '/Users/test/Documents/Hey Scribe/2026-10-23 2045 - Grocery list.md',
+          timestamp: '8:45 PM',
+          isNew: false
+        }
+      ])
+    }
+  }, [])
+
+  // Chip copy & state indicator
+  const chipConfig = useMemo(() => {
     switch (orbState) {
       case 'listening':
-        return 'Listening'
+        return { text: 'Listening', dotClass: 'bg-[#7C8CF8]' }
       case 'thinking':
-        return 'Thinking'
+        return { text: 'Thinking', dotClass: 'bg-[#7C8CF8] animate-pulse' }
       case 'speaking':
-        return spokenReply || 'Speaking'
+        return { text: 'Speaking', dotClass: 'bg-[#34D399]' }
+      case 'idle':
       default:
-        return 'Listening for Hey Jarvis'
+        return { text: 'Listening for Hey Jarvis', dotClass: 'bg-[#8A93A6]' }
     }
-  }
+  }, [orbState])
+
+  // Words for staggered 40 ms fade-in
+  const words = useMemo(() => {
+    if (!transcriptText.trim()) return []
+    return transcriptText.trim().split(/\s+/)
+  }, [transcriptText])
 
   return (
-    <div className="flex h-screen w-screen bg-[#0b0e14] text-slate-100 font-sans overflow-hidden select-none">
+    <div className="flex h-screen w-screen bg-[#0B0E14] text-[#E6E9F2] font-sans overflow-hidden select-none">
       {/* Left Pane: 360 px Note Rail */}
-      <aside className="w-[360px] h-full flex flex-col border-r border-slate-800/80 bg-[#0f141d]/80 backdrop-blur-xl shrink-0">
-        {/* Title bar drag region */}
-        <div className="h-12 flex items-center justify-between px-6 border-b border-slate-800/50 app-region-drag shrink-0">
-          <span className="text-xs font-semibold tracking-wider text-slate-400 uppercase">
-            Notes
+      <aside className="w-[360px] h-full flex flex-col border-r border-[#1C2230] bg-[#0B0E14] shrink-0">
+        {/* Title bar drag region with macOS traffic light spacing */}
+        <div className="h-11 flex items-center justify-between px-6 pt-3 border-b border-[#1C2230] app-region-drag shrink-0">
+          <span className="text-[13px] font-semibold tracking-[0.08em] text-[#8A93A6] uppercase pl-16">
+            Today
           </span>
           {notes.length > 0 && (
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400">
+            <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[#121620] border border-[#1C2230] text-[#8A93A6]">
               {notes.length}
             </span>
           )}
         </div>
 
         {/* Note list or empty state */}
-        <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-slate-800">
+        <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-[#1C2230]">
           {notes.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center p-6 text-center">
-              <div className="w-12 h-12 mb-4 rounded-xl border border-slate-800 flex items-center justify-center bg-slate-900/60 text-slate-500">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {/* Outline document glyph */}
+              <div className="w-12 h-12 mb-3 rounded-lg border border-[#1C2230] flex items-center justify-center bg-[#121620]/60 text-[#8A93A6]">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    strokeWidth={1.5}
+                    strokeWidth={1.25}
                     d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
                   />
                 </svg>
               </div>
-              <p className="text-sm font-medium text-slate-400">Your notes will appear here</p>
-              <p className="text-xs text-slate-600 mt-1 max-w-[200px]">
-                Say &ldquo;Hey Jarvis&rdquo; or hold ⌥Space to take a note.
+              <p className="text-[14px] font-normal text-[#8A93A6]">
+                Your first note will land here.
               </p>
             </div>
           ) : (
@@ -350,20 +409,11 @@ export const App: React.FC = () => {
       </aside>
 
       {/* Right Stage */}
-      <main className="flex-1 h-full flex flex-col relative items-center justify-center p-8">
-        {/* Top Header controls */}
+      <main className="flex-1 h-full flex flex-col relative items-center justify-center p-8 bg-[#0B0E14]">
+        {/* Top Header Controls */}
         <div className="absolute top-4 right-6 flex items-center space-x-3">
-          {/* Demo Mode Button */}
-          <button
-            onClick={() => handleTriggerDemo('hello.wav')}
-            title="Replay test fixture audio (⌘D)"
-            className="px-2.5 py-1 rounded-md bg-slate-900/90 hover:bg-slate-800 border border-slate-700/60 text-[11px] font-medium text-slate-400 hover:text-slate-200 transition-colors shadow-sm"
-          >
-            Demo Mode
-          </button>
-
           {sidecarStatus === 'crashed' && (
-            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-red-950/80 border border-red-500/50 text-red-300">
+            <span className="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-red-950/80 border border-red-500/50 text-red-300">
               <span className="w-1.5 h-1.5 mr-1.5 rounded-full bg-red-400 animate-ping" />
               Sidecar Offline
             </span>
@@ -372,8 +422,8 @@ export const App: React.FC = () => {
 
         {/* Mic Denied Recovery Card */}
         {micStatus === 'denied' ? (
-          <div className="max-w-md mx-6 p-6 rounded-2xl bg-slate-900/90 border border-rose-500/40 shadow-2xl backdrop-blur-xl text-center">
-            <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+          <div className="max-w-md mx-6 p-6 rounded-xl bg-[#121620] border border-rose-500/40 text-center select-none">
+            <div className="w-12 h-12 mx-auto mb-4 rounded-lg bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path
                   strokeLinecap="round"
@@ -383,51 +433,65 @@ export const App: React.FC = () => {
                 />
               </svg>
             </div>
-            <h3 className="text-base font-semibold text-slate-100">Microphone Access Required</h3>
-            <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+            <h3 className="text-[15px] font-semibold text-[#E6E9F2]">Microphone Access Required</h3>
+            <p className="text-[13px] text-[#8A93A6] mt-2 leading-relaxed">
               Hey Scribe needs microphone access to listen locally. No audio leaves this laptop.
             </p>
             <button
               onClick={() => window.scribe?.openMicSettings()}
-              className="mt-5 inline-flex items-center px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs transition-colors shadow-lg shadow-sky-500/20"
+              className="mt-5 inline-flex items-center px-4 py-2 rounded-lg bg-[#7C8CF8] hover:bg-[#6878ea] text-[#0B0E14] font-semibold text-[13px] transition-colors"
             >
               Open System Settings
             </button>
           </div>
         ) : (
-          /* Live Stage Orb & Status & Transcript */
-          <div className="flex flex-col items-center justify-center space-y-6 max-w-xl text-center">
+          /* Live Stage: Orb + Chip + Word-by-Word Transcript */
+          <div className="flex flex-col items-center justify-center max-w-xl text-center w-full">
+            {/* 220 px Orb */}
             <Orb state={orbState} rms={rms} />
 
-            {/* Status Chip */}
-            <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-slate-900/80 border border-slate-700/60 shadow-lg backdrop-blur-md">
-              <span
-                className={`w-2 h-2 mr-2.5 rounded-full transition-colors duration-300 ${
-                  orbState === 'listening'
-                    ? 'bg-sky-400 shadow-[0_0_8px_#38bdf8]'
-                    : orbState === 'thinking'
-                      ? 'bg-violet-400 shadow-[0_0_8px_#a855f7]'
-                      : orbState === 'speaking'
-                        ? 'bg-emerald-400 shadow-[0_0_8px_#34d399]'
-                        : 'bg-slate-500'
-                }`}
-              />
-              <span className="text-xs font-medium tracking-wide text-slate-300">
-                {getStatusChipText()}
+            {/* State Chip: Pill, 1px border, 13px label with 0.08em letter-spacing */}
+            <div className="inline-flex items-center px-3.5 py-1.5 rounded-full bg-[#121620] border border-[#1C2230] mt-7 transition-all duration-200">
+              <span className={`w-2 h-2 mr-2.5 rounded-full transition-colors duration-200 ${chipConfig.dotClass}`} />
+              <span className="text-[13px] tracking-[0.08em] font-medium text-[#E6E9F2]">
+                {chipConfig.text}
               </span>
             </div>
 
-            {/* Typewriter reveal transcript */}
-            {displayedTranscript && (
-              <div className="min-h-[48px] px-6 py-3 rounded-xl bg-slate-900/40 border border-slate-800/60 text-sm text-slate-200 font-medium tracking-normal leading-relaxed max-w-md animate-in fade-in duration-300">
-                &ldquo;{displayedTranscript}&rdquo;
-              </div>
-            )}
+            {/* Transcript: Center stage, max 2 lines, 22px / 1.5, fades in per word (40 ms stagger) */}
+            <div className="min-h-[66px] max-h-[66px] flex items-center justify-center mt-5 px-6 max-w-[560px] text-center overflow-hidden">
+              {words.length > 0 ? (
+                <p className="text-[22px] leading-[1.5] text-[#E6E9F2] font-normal line-clamp-2">
+                  {words.map((word, idx) => (
+                    <span
+                      key={`${word}-${idx}`}
+                      className="inline-block mr-1.5 opacity-0 animate-word-fade"
+                      style={{ animationDelay: `${idx * 40}ms` }}
+                    >
+                      {word}
+                    </span>
+                  ))}
+                </p>
+              ) : showQuietHint ? (
+                <p className="text-[18px] leading-[1.5] text-[#8A93A6]/40 font-normal tracking-wide transition-opacity duration-500">
+                  Say Hey Jarvis
+                </p>
+              ) : null}
+            </div>
           </div>
         )}
 
+        {/* Bottom Hint Bar: "⌥ Space hold to talk · Esc to cancel", 12px muted, fades after 10 s */}
+        <div
+          className={`absolute bottom-5 inset-x-0 text-center text-[12px] text-[#8A93A6] tracking-wide pointer-events-none transition-opacity duration-1000 ${
+            showHintBar ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          ⌥ Space hold to talk · Esc to cancel
+        </div>
+
         {/* Hidden dev-only corner FPS meter */}
-        <div className="absolute bottom-3 right-4 text-[10px] font-mono text-slate-600 select-none pointer-events-none opacity-40 hover:opacity-100 transition-opacity">
+        <div className="absolute bottom-3 right-4 text-[10px] font-mono text-[#8A93A6]/30 select-none pointer-events-none hover:text-[#8A93A6] transition-colors">
           {fps} fps
         </div>
       </main>
